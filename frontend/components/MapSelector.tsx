@@ -73,6 +73,13 @@ const MapSelector: React.FC<MapSelectorProps> = ({
         };
     }, []);
 
+    useEffect(() => {
+        if (!fromCoord && !toCoord && (startPoint || endPoint)) {
+            resetSelection();
+        }
+    }, [fromCoord, toCoord]);
+
+
     // Sync with parent component coordinates
     useEffect(() => {
         if (fromCoord && fromCoord !== startPoint) {
@@ -172,21 +179,28 @@ const MapSelector: React.FC<MapSelectorProps> = ({
         const { lat, lng } = e.latlng;
         const coord: Coordinate = { lat, lng };
 
-        if (!startPoint) {
+        // If neither point is set
+        if (!startPoint && !endPoint) {
             setStartPoint(coord);
             addStartMarker(coord);
-        } else if (!endPoint) {
+            return;
+        }
+
+        // If start is set and end is not
+        if (startPoint && !endPoint) {
             setEndPoint(coord);
             addEndMarker(coord);
-            // Automatically trigger route calculation
-            onSelect(startPoint, coord);
-        } else {
-            // Reset and start over
-            resetSelection();
-            setStartPoint(coord);
-            addStartMarker(coord);
+            onSelect(startPoint, coord); // startPoint is reliable here
+            return;
         }
+
+        // If both are set, reset
+        resetSelection();
+        setStartPoint(coord);
+        addStartMarker(coord);
     };
+
+
 
     const addStartMarker = (coord: Coordinate) => {
         if (!mapInstanceRef.current || !window.L) return;

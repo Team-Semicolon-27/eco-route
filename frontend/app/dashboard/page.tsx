@@ -132,6 +132,7 @@ export default function DashboardPage() {
     setError("");
   };
 
+
   const formatNumber = (num: number, decimals: number = 2): string => {
     return num.toFixed(decimals);
   };

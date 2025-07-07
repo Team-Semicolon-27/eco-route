@@ -4,9 +4,7 @@ export { default } from 'next-auth/middleware';
 
 export const config = {
     matcher: [
-        '/sign-in',
-        '/sign-up',
-        '/',
+        '/((?!api|_next/static|_next/image|favicon.ico|sign-in|sign-up).*)',
     ],
 };
 
@@ -14,8 +12,13 @@ export async function middleware(request: NextRequest) {
     const token = await getToken({ req: request });
     const url = request.nextUrl;
 
-    console.log(token);
+    if (token && (url.pathname.startsWith("/sign-up") || url.pathname.startsWith("/sign-in"))) {
+        return NextResponse.redirect(new URL('/', request.url));
+    }
 
+    if (!token && !url.pathname.startsWith('/sign-up') && !url.pathname.startsWith('/sign-in')) {
+        return NextResponse.redirect(new URL('/sign-up', request.url));
+    }
 
     return NextResponse.next();
 }

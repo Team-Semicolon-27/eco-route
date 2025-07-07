@@ -6,7 +6,7 @@ export interface IManager  extends Document {
 }
 
 export const ManagerSchema = new Schema<IManager>({
-    userId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: "User" },
+    userId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: "User", unique: true },
     vehicles: [
         { type: mongoose.Schema.Types.ObjectId, ref: "Vehicle" },
     ]

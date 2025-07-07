@@ -18,9 +18,7 @@ export const authOptions: NextAuthOptions = {
                 await dbConnect();
                 try {
                     const user = await User.findOne({
-                        $or: [
-                            { email: credentials.identifier }
-                        ],
+                       email: credentials.email,
                     });
                     if (!user) {
                         throw new Error('No user found with this email');
@@ -35,7 +33,6 @@ export const authOptions: NextAuthOptions = {
                             _id: user._id?.toString(),
                             firstName: user.firstName,
                             lastName: user.lastName,
-                            email: user.email,
                             role: user.role
                         };
                     } else {
@@ -55,7 +52,6 @@ export const authOptions: NextAuthOptions = {
                 token.firsName = user.firstName;
                 token.lastName = user.lastName;
                 token.role = user.role;
-                token.email = user.email;
             }
             return token;
         },
@@ -65,7 +61,6 @@ export const authOptions: NextAuthOptions = {
                 session.user.firstName = token.firstName;
                 session.user.lastName = token.lastName;
                 session.user.role = token.role;
-                session.user.email = token.email;
             }
             return session;
         },

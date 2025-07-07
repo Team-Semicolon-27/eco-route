@@ -1,54 +1,143 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import {useState, ChangeEvent, FormEvent, useEffect} from "react";
+import {useRouter} from "next/navigation";
 import Link from "next/link";
-import axios from "axios";
+import axios, {AxiosError} from "axios";
+import {City, Country, ICity, ICountry, IState, State} from "country-state-city";
+import {CldImage, CldUploadButton, CloudinaryUploadWidgetResults} from "next-cloudinary";
+
+interface SignupForm {
+    firstName: string;
+    lastName: string;
+    email: string;
+    password: string;
+    role: "driver" | "manager" | "";
+    country?: string;
+    state?: string;
+    city?: string;
+}
 
 export default function SignupPage() {
     const router = useRouter();
-    const [form, setForm] = useState({
+
+    const [form, setForm] = useState<SignupForm>({
         firstName: "",
         lastName: "",
         email: "",
         password: "",
         role: "",
+        country: "",
+        state: "",
+        city: "",
     });
+
+    const [profile, setProfile] = useState<string | null>(null);
+    const [countries, setCountries] = useState<ICountry[]>([]);
+    const [states, setStates] = useState<IState[]>([]);
+    const [cities, setCities] = useState<ICity[]>([]);
+
+    useEffect(() => {
+        setCountries(Country.getAllCountries());
+    }, []);
+
+    useEffect(() => {
+        if (form.country) {
+            setStates(State.getStatesOfCountry(form.country));
+            setForm((prev) => ({...prev, state: "", city: ""}));
+        }
+    }, [form.country]);
+
+    useEffect(() => {
+        if (form.country && form.state) {
+            setCities(City.getCitiesOfState(form.country, form.state));
+            setForm((prev) => ({...prev, city: ""}));
+        }
+    }, [form.state]);
+
+
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setForm({ ...form, [e.target.name]: e.target.value });
+    const handleChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+        const {name, value} = e.target;
+        setForm((prev) => ({...prev, [name]: value}));
     };
 
-    const handleRoleChange = (role: string) => {
-        setForm({ ...form, role: form.role === role ? "" : role }); // toggle same role off
+    function handleUpload(result:  CloudinaryUploadWidgetResults) {
+        if (result.event === "success" && result.info && typeof result.info !== "string") {
+            setProfile(result.info.secure_url);
+        }
+    }
+
+    const handleRoleChange = (role: "driver" | "manager") => {
+        setForm((prev) => ({ ...prev, role: prev.role === role ? "" : role }));
     };
 
-    const handleSubmit = async (e: React.FormEvent) => {
+    const isEmailValid = (email: string): boolean => {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    };
+
+    const isNameValid = (name: string): boolean => {
+        return /^[a-zA-Z]{2,30}$/.test(name);
+    };
+
+    const handleSubmit = async (e: FormEvent) => {
         e.preventDefault();
         setError("");
         setLoading(true);
 
-        if (!form.role) {
-            setError("Please select either Driver or Manager");
+        // 🛑 Validation
+        if (!isNameValid(form.firstName)) {
+            setError("First name must be 2-30 alphabetic characters.");
             setLoading(false);
             return;
         }
 
-        const res = await axios.post("/api/auth/signup", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(form),
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-            setError(data.error || "Signup failed");
+        if (!isNameValid(form.lastName)) {
+            setError("Last name must be 2-30 alphabetic characters.");
             setLoading(false);
-        } else {
-            router.push("/signin");
+            return;
+        }
+
+        if (!isEmailValid(form.email)) {
+            setError("Please enter a valid email address.");
+            setLoading(false);
+            return;
+        }
+
+        if (form.password.length < 6) {
+            setError("Password must be at least 6 characters.");
+            setLoading(false);
+            return;
+        }
+
+        if (!form.role) {
+            setError("Please select either Driver or Manager.");
+            setLoading(false);
+            return;
+        }
+
+        if (!profile) {
+            setError("Please upload photo.");
+            setLoading(false);
+            return;
+        }
+
+        // ✅ Signup request
+        try {
+            const res = await axios.post("/api/auth/sign-up", {...form, profile});
+
+            if (res.status === 200) {
+                router.push("/sign-in");
+            } else {
+                setError(res.data.message || "Signup failed");
+            }
+        } catch (err) {
+            const axiosErr = err as AxiosError<{ message: string }>;
+            setError(axiosErr.response?.data?.message || "Signup failed");
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -99,6 +188,27 @@ export default function SignupPage() {
                         required
                     />
 
+                    {/* Upload Button */}
+                    <CldUploadButton
+                        uploadPreset={process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET!}
+                        onSuccess={handleUpload}
+                        className="bg-cyan-500 px-4 py-2 rounded-lg text-white"
+                    >
+                        Upload Profile Picture
+                    </CldUploadButton>
+
+                    {/* Preview */}
+                    {profile && (
+                        <CldImage
+                            src={profile}
+                            alt="Profile"
+                            width={100}
+                            height={100}
+                            className="rounded-full mt-2"
+                        />
+                    )}
+
+
                     <div className="flex items-center justify-between text-white text-sm">
                         <label className="flex items-center space-x-2">
                             <input
@@ -120,6 +230,41 @@ export default function SignupPage() {
                         </label>
                     </div>
 
+                    {form.role === "driver" && (
+                        <>
+                            <select name="country" value={form.country} onChange={handleChange} className="w-full px-4 py-2 rounded-lg bg-white/20 text-white" required>
+                                <option value="">Select Country</option>
+                                {countries.map((c) => (
+                                    <option key={c.isoCode} value={c.isoCode}>
+                                        {c.name}
+                                    </option>
+                                ))}
+                            </select>
+
+                            {states.length > 0 && (
+                                <select name="state" value={form.state} onChange={handleChange} className="w-full px-4 py-2 rounded-lg bg-white/20 text-white" required>
+                                    <option value="">Select State</option>
+                                    {states.map((s) => (
+                                        <option key={s.isoCode} value={s.isoCode}>
+                                            {s.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+
+                            {cities.length > 0 && (
+                                <select name="city" value={form.city} onChange={handleChange} className="w-full px-4 py-2 rounded-lg bg-white/20 text-white" required>
+                                    <option value="">Select City</option>
+                                    {cities.map((city) => (
+                                        <option key={city.name} value={city.name}>
+                                            {city.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+                        </>
+                    )}
+
                     {error && <p className="text-red-400 text-sm">{error}</p>}
 
                     <button
@@ -134,7 +279,7 @@ export default function SignupPage() {
                 <div className="mt-6 text-center">
                     <p className="text-sm text-white/70">
                         Already have an account?{" "}
-                        <Link href="/sign-in" className="text-cyan-300 font-semibold hover:underline">
+                        <Link href="/signin" className="text-cyan-300 font-semibold hover:underline">
                             Sign In
                         </Link>
                     </p>

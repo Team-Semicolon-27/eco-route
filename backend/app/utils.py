@@ -14,23 +14,16 @@ import networkx as nx
 from pathlib import Path
 from geopy.distance import geodesic
 
-logger = logging.getLogger(__name__)
+from sqlalchemy.orm import Session
+from . import dbmodels
 
-# Global variables for caching and data
-# The 'global' keyword here is for clarity, but the assignment below initializes them
-co2_map = {}
-elev_cache = {}
-tomtom_cache = {}
+co2_map = {}  # Global variable to hold CO2 emission factors
+
+logger = logging.getLogger(__name__)
 
 # Configuration paths
 CURRENT_DIR = Path(__file__).resolve().parent
 CSV_PATH = CURRENT_DIR.parent / "export-hbefa.csv" # CORRECTED PATH
-ELEVATION_CACHE_PATH = CURRENT_DIR.parent / "elevation_cache.json"
-TOMTOM_CACHE_PATH = CURRENT_DIR.parent / "tomtom_cache.json"
-
-# Global cache directory
-CACHE_DIR = Path("graph_cache")
-CACHE_DIR.mkdir(exist_ok=True)
 
 
 def load_co2_data():
@@ -93,59 +86,82 @@ def vehicle_mass_kg(vehicle: str) -> int:
         "urban bus": 14000
     }.get(vehicle, 1500) # Default to passenger car mass
 
-def load_elevation_cache():
-    """Load elevation cache from file"""
-    global elev_cache
-    if os.path.exists(ELEVATION_CACHE_PATH):
-        try:
-            with open(ELEVATION_CACHE_PATH, "r") as f:
-                # --- APPLY SAME LOGIC HERE ---
-                elev_cache.clear()
-                elev_cache.update({int(k): v for k, v in json.load(f).items()})
-            logger.info(f"Loaded elevation cache with {len(elev_cache)} entries.")
-        except json.JSONDecodeError as e:
-            logger.warning(f"Error decoding elevation cache JSON: {e}. Starting with empty cache.")
-            elev_cache.clear() # Ensure it's explicitly empty on error
-        except Exception as e:
-            logger.error(f"Unexpected error loading elevation cache: {e}. Starting with empty cache.")
-            elev_cache.clear()
-    return elev_cache
-
-def save_elevation_cache():
-    """Save elevation cache to file"""
+def save_chunk_to_cache(db: Session, graph_chunk: nx.MultiDiGraph, cache_key: str):
+    """Saves a graph chunk to the database."""
     try:
-        with open(ELEVATION_CACHE_PATH, "w") as f:
-            json.dump(elev_cache, f)
-        logger.debug(f"Elevation cache saved with {len(elev_cache)} entries.")
-    except IOError as e:
-        logger.error(f"Failed to save elevation cache: {e}")
+        serialized_graph = pickle.dumps(graph_chunk, protocol=pickle.HIGHEST_PROTOCOL)
+        existing_chunk = db.query(dbmodels.GraphCache).filter(dbmodels.GraphCache.cache_key == cache_key).first()
+        
+        if not existing_chunk:
+            new_chunk = dbmodels.GraphCache(cache_key=cache_key, graph_data=serialized_graph)
+            db.add(new_chunk)
+            db.commit()
+            logger.debug(f"Saved chunk to DB cache: {cache_key}")
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Failed to save chunk to DB cache: {e}")
 
-def load_tomtom_cache():
-    """Load TomTom cache from file"""
-    global tomtom_cache
-    if os.path.exists(TOMTOM_CACHE_PATH):
-        try:
-            with open(TOMTOM_CACHE_PATH, "r") as f:
-                # --- APPLY SAME LOGIC HERE ---
-                tomtom_cache.clear()
-                tomtom_cache.update(json.load(f))
-            logger.info(f"Loaded TomTom cache with {len(tomtom_cache)} entries.")
-        except json.JSONDecodeError as e:
-            logger.warning(f"Error decoding TomTom cache JSON: {e}. Starting with empty cache.")
-            tomtom_cache.clear() # Ensure it's explicitly empty on error
-        except Exception as e:
-            logger.error(f"Unexpected error loading TomTom cache: {e}. Starting with empty cache.")
-            tomtom_cache.clear()
-    return tomtom_cache
-
-def save_tomtom_cache():
-    """Save TomTom cache to file"""
+def load_chunk_from_cache(db: Session, cache_key: str) -> Optional[nx.MultiDiGraph]:
+    """Loads a graph chunk from the database."""
     try:
-        with open(TOMTOM_CACHE_PATH, "w") as f:
-            json.dump(tomtom_cache, f)
-        logger.debug(f"TomTom cache saved with {len(tomtom_cache)} entries.")
-    except IOError as e:
-        logger.error(f"Failed to save TomTom cache: {e}")
+        cached_chunk = db.query(dbmodels.GraphCache).filter(dbmodels.GraphCache.cache_key == cache_key).first()
+        if cached_chunk:
+            logger.debug(f"Loaded chunk from DB cache: {cache_key}")
+            return pickle.loads(cached_chunk.graph_data)
+    except Exception as e:
+        logger.warning(f"Failed to load chunk from DB cache: {e}")
+    return None
+
+# --- Elevation Caching ---
+def get_elevations_from_db(db: Session, node_ids: List[int]) -> Dict[int, float]:
+    """Retrieves elevations for a list of node IDs from the database."""
+    try:
+        results = db.query(dbmodels.ElevationCache).filter(dbmodels.ElevationCache.node_id.in_(node_ids)).all()
+        return {result.node_id: result.elevation for result in results}
+    except Exception as e:
+        logger.error(f"Error fetching elevations from DB: {e}")
+        return {}
+
+def save_elevations_to_db(db: Session, elevation_data: Dict[int, float]):
+    """Saves a batch of elevation data to the database."""
+    try:
+        new_elevations = [
+            dbmodels.ElevationCache(node_id=node_id, elevation=elev)
+            for node_id, elev in elevation_data.items()
+        ]
+        if new_elevations:
+            db.bulk_save_objects(new_elevations)
+            db.commit()
+            logger.info(f"Saved {len(new_elevations)} new elevation entries to DB.")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to save elevations to DB: {e}")
+
+# --- TomTom Caching ---
+def get_tomtom_speeds_from_db(db: Session, keys: List[str]) -> Dict[str, Optional[float]]:
+    """Retrieves TomTom speeds for a list of cache keys from the database."""
+    try:
+        results = db.query(dbmodels.TomTomCache).filter(dbmodels.TomTomCache.cache_key.in_(keys)).all()
+        # Convert stored string back to float, handling 'None'
+        return {r.cache_key: float(r.speed_data) if r.speed_data != 'None' else None for r in results}
+    except Exception as e:
+        logger.error(f"Error fetching TomTom data from DB: {e}")
+        return {}
+
+def save_tomtom_speeds_to_db(db: Session, speed_data: Dict[str, Optional[float]]):
+    """Saves a batch of TomTom speed data to the database."""
+    try:
+        new_speeds = [
+            dbmodels.TomTomCache(cache_key=key, speed_data=str(speed))
+            for key, speed in speed_data.items()
+        ]
+        if new_speeds:
+            db.bulk_save_objects(new_speeds)
+            db.commit()
+            logger.info(f"Saved {len(new_speeds)} new TomTom entries to DB.")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to save TomTom data to DB: {e}")
 
 def fetch_elevation_batch(coords: List[Tuple[float, float]]) -> List[float]:
     """Fetch elevation data for a batch of coordinates from Open Topo Data API."""
@@ -290,61 +306,6 @@ def get_chunk_cache_key(center_coords, chunk_size_km):
     
     return f"chunk_{cache_hash}.pkl"
 
-def save_chunk_to_cache(graph_chunk, cache_key):
-    """
-    Save a graph chunk to cache.
-    
-    Args:
-        graph_chunk: networkx.MultiDiGraph object
-        cache_key: Cache key string
-    """
-    try:
-        cache_path = CACHE_DIR / cache_key
-        with open(cache_path, 'wb') as f:
-            pickle.dump(graph_chunk, f, protocol=pickle.HIGHEST_PROTOCOL)
-        logger.debug(f"Saved chunk to cache: {cache_key}")
-    except Exception as e:
-        logger.warning(f"Failed to save chunk to cache: {e}")
-
-def load_chunk_from_cache(cache_key):
-    """
-    Load a graph chunk from cache.
-    
-    Args:
-        cache_key: Cache key string
-    
-    Returns:
-        networkx.MultiDiGraph or None: Cached graph chunk
-    """
-    try:
-        cache_path = CACHE_DIR / cache_key
-        if cache_path.exists():
-            with open(cache_path, 'rb') as f:
-                chunk = pickle.load(f)
-            logger.debug(f"Loaded chunk from cache: {cache_key}")
-            return chunk
-    except Exception as e:
-        logger.warning(f"Failed to load chunk from cache: {e}")
-    
-    return None
-
-def clear_old_cache(max_age_days=7):
-    """
-    Clear cache files older than specified days.
-    
-    Args:
-        max_age_days: Maximum age in days
-    """
-    try:
-        current_time = time.time()
-        max_age_seconds = max_age_days * 24 * 60 * 60
-        
-        for cache_file in CACHE_DIR.glob("chunk_*.pkl"):
-            if current_time - cache_file.stat().st_mtime > max_age_seconds:
-                cache_file.unlink()
-                logger.debug(f"Deleted old cache file: {cache_file.name}")
-    except Exception as e:
-        logger.warning(f"Failed to clear old cache: {e}")
 
 def calculate_chunk_bounds(center_coords, chunk_size_km=25):
     """

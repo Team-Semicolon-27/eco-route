@@ -119,12 +119,6 @@ export default function MapControls({
             onClick={handleRouteFind}
           />
         </div>
-
-        {routeReady && (
-          <div className="mt-2">
-            <GoogleMapButton onClick={handleRouteFind} />
-          </div>
-        )}
       </div>
     </div>
   );

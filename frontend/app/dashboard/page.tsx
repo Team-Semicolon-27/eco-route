@@ -1,12 +1,30 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { GeoapifyContext } from "@geoapify/react-geocoder-autocomplete";
-import { LatLngTuple } from "leaflet";
+import type { LatLngTuple } from "leaflet";
+
 import MapControls from "@/components/MapControls";
 import MapDisplay from "@/components/MapDisplay";
-import LogDisplay from "@/components/LogDisplay";
-import GoogleMapButton from "@/components/UI elements/GMapButtom"; // Add this
+
+interface EcoStats {
+  distance_km: number;
+  time_minutes: number;
+  time_minutes_google_estimated: number;
+  co2_kg: number;
+}
+
+interface GoogleStats {
+  distance_km: number;
+  time_minutes: number;
+  co2_kg: number;
+}
+
+interface Comparison {
+  co2_savings_kg: number;
+  co2_savings_percent: number;
+  time_difference_minutes: number;
+}
 
 export default function Page() {
   const [source, setSource] = useState<any>(null);
@@ -18,93 +36,101 @@ export default function Page() {
   const [googleRoute, setGoogleRoute] = useState<LatLngTuple[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
 
-  const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
-  const eventSourceRef = React.useRef<EventSource | null>(null);
+  // New state for stats
+  const [ecoStats, setEcoStats] = useState<EcoStats | null>(null);
+  const [googleStats, setGoogleStats] = useState<GoogleStats | null>(null);
+  const [comparison, setComparison] = useState<Comparison | null>(null);
+
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const handleRouteFind = () => {
     if (!source || !destination) {
       alert("Please select both source and destination.");
       return;
     }
-
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
+    eventSourceRef.current?.close();
     setLoading(true);
     setLogs([]);
     setEcoRoute([]);
     setGoogleRoute([]);
 
+    // Reset stats
+    setEcoStats(null);
+    setGoogleStats(null);
+    setComparison(null);
+
     const origin = `${source.properties.lat},${source.properties.lon}`;
-    const destinationCoords = `${destination.properties.lat},${destination.properties.lon}`;
-    const url = `http://127.0.0.1:8000/route/stream?origin=${origin}&destination=${destinationCoords}&vehicle=${vehicle}`;
+    const dest = `${destination.properties.lat},${destination.properties.lon}`;
+    const url = `http://127.0.0.1:8000/route/stream?origin=${origin}&destination=${dest}&vehicle=${vehicle}`;
+    const es = new EventSource(url);
+    eventSourceRef.current = es;
 
-    const eventSource = new EventSource(url);
-    eventSourceRef.current = eventSource;
+    es.onmessage = (event) => {
+      const { type, message, data } = JSON.parse(event.data);
+      if (type === "log") {
+        setLogs((l) => [...l, message]);
+      } else if (type === "result") {
+        setEcoRoute(data.eco_route);
+        setGoogleRoute(data.google_route);
 
-    eventSource.onmessage = (event) => {
-      const parsedData = JSON.parse(event.data);
+        // Set the stats data
+        if (data.eco_stats) {
+          setEcoStats(data.eco_stats);
+        }
+        if (data.google_stats) {
+          setGoogleStats(data.google_stats);
+        }
+        if (data.comparison) {
+          setComparison(data.comparison);
+        }
 
-      if (parsedData.type === 'log') {
-        setLogs(prev => [...prev, parsedData.message]);
-      } else if (parsedData.type === 'result') {
-        const { eco_route, google_route } = parsedData.data;
-        setEcoRoute(eco_route as LatLngTuple[]);
-        setGoogleRoute(google_route as LatLngTuple[]);
         setLoading(false);
-        eventSource.close();
-      } else if (parsedData.type === 'error') {
-        setLogs(prev => [...prev, `[ERROR] ${parsedData.message}`]);
-        alert(`Error: ${parsedData.message}`);
+        es.close();
+      } else if (type === "error") {
+        setLogs((l) => [...l, `[ERROR] ${message}`]);
+        alert(`Error: ${message}`);
         setLoading(false);
-        eventSource.close();
+        es.close();
       }
     };
 
-    eventSource.onerror = (err) => {
+    es.onerror = (err) => {
       console.error("EventSource failed:", err);
-      setLogs(prev => [...prev, "[ERROR] Connection to server lost."]);
+      setLogs((l) => [...l, "[ERROR] Connection to server lost."]);
       setLoading(false);
-      eventSource.close();
+      es.close();
     };
   };
 
   const handleGoogleMapOpen = () => {
-    if (!ecoRoute || ecoRoute.length < 2) return;
-
-    let path_coords = ecoRoute;
-    const max_points = 25;
-
-    if (path_coords.length > max_points) {
-      const step = Math.floor(path_coords.length / (max_points - 1));
-      path_coords = path_coords.filter((_, index) => index % step === 0);
-      if (path_coords[path_coords.length - 1] !== ecoRoute[ecoRoute.length - 1]) {
-        path_coords.push(ecoRoute[ecoRoute.length - 1]);
+    if (ecoRoute.length < 2) return;
+    let pts = ecoRoute;
+    const max = 25;
+    if (pts.length > max) {
+      const step = Math.floor(pts.length / (max - 1));
+      pts = pts.filter((_, i) => i % step === 0);
+      if (pts[pts.length - 1] !== ecoRoute[ecoRoute.length - 1]) {
+        pts.push(ecoRoute[ecoRoute.length - 1]);
       }
     }
-
-    const origin = `${path_coords[0][0]},${path_coords[0][1]}`;
-    const destination = `${path_coords[path_coords.length - 1][0]},${path_coords[path_coords.length - 1][1]}`;
-    const waypoints = path_coords
+    const origin = `${pts[0][0]},${pts[0][1]}`;
+    const dest = `${pts[pts.length - 1][0]},${pts[pts.length - 1][1]}`;
+    const waypoints = pts
       .slice(1, -1)
       .map(([lat, lon]) => `${lat},${lon}`)
       .join("|");
-
-    const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&waypoints=${waypoints}`;
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}&waypoints=${waypoints}`;
     window.open(url, "_blank");
   };
 
   useEffect(() => {
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+      eventSourceRef.current?.close();
     };
   }, []);
 
   return (
-    <GeoapifyContext apiKey={apiKey}>
+    <GeoapifyContext apiKey={process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY}>
       <div
         className="min-h-screen flex items-center justify-center"
         style={{ backgroundColor: "#365241" }}
@@ -114,9 +140,8 @@ export default function Page() {
           style={{ backgroundColor: "#F0EDD1", color: "#243931" }}
         >
           <h1 className="text-5xl font-bold mb-4">Dashboard</h1>
-
           <div className="flex justify-between items-start gap-4 h-[calc(100%-60px)]">
-            <div className="flex flex-col gap-4 w-1/3 h-full">
+            <div className="flex-[1] h-full">
               <MapControls
                 source={source}
                 setSource={setSource}
@@ -124,28 +149,23 @@ export default function Page() {
                 setDestination={setDestination}
                 vehicle={vehicle}
                 setVehicle={setVehicle}
-                handleRouteFind={handleRouteFind}
                 loading={loading}
-                routeReady={ecoRoute.length > 0 || googleRoute.length > 0}
+                routeReady={ecoRoute.length > 0}
+                onFind={handleRouteFind}
+                onOpenGoogleMaps={handleGoogleMapOpen}
               />
-
-              <GoogleMapButton
-                disabled={ecoRoute.length === 0}
-                onClick={handleGoogleMapOpen}
-              />
-
-              {(loading || logs.length > 0) && (
-                <LogDisplay loading={loading} logs={logs} />
-              )}
             </div>
-
-            <div className="w-2/3 h-full">
+            <div className="flex-[2] h-full">
               <MapDisplay
                 source={source}
                 destination={destination}
                 loading={loading}
                 ecoRoute={ecoRoute}
                 googleRoute={googleRoute}
+                logs={logs}
+                ecoStats={ecoStats}
+                googleStats={googleStats}
+                comparison={comparison}
               />
             </div>
           </div>

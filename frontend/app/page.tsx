@@ -1,6 +1,6 @@
-export default function Home() {
+// app/page.tsx (or wherever your "/" route component is defined)
+import { redirect } from "next/navigation";
 
-  return (
-    <div>hi</div>
-  );
+export default function Home() {
+  redirect("/dashboard");
 }

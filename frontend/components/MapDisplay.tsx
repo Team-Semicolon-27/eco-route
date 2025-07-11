@@ -4,6 +4,7 @@ import React, { useRef, useEffect } from "react";
 import L, { Marker, LatLngTuple } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import LoadingOverlay from "./LoadingOverlay";
+import StatsDisplay from "./StatsDisplay";
 
 interface MapDisplayProps {
   source: any;
@@ -11,6 +12,23 @@ interface MapDisplayProps {
   loading: boolean;
   ecoRoute: LatLngTuple[];
   googleRoute: LatLngTuple[];
+  logs: string[];
+  ecoStats: {
+    distance_km: number;
+    time_minutes: number;
+    time_minutes_google_estimated: number;
+    co2_kg: number;
+  } | null;
+  googleStats: {
+    distance_km: number;
+    time_minutes: number;
+    co2_kg: number;
+  } | null;
+  comparison: {
+    co2_savings_kg: number;
+    co2_savings_percent: number;
+    time_difference_minutes: number;
+  } | null;
 }
 
 const createCustomIcon = (
@@ -39,6 +57,10 @@ export default function MapDisplay({
   loading,
   ecoRoute,
   googleRoute,
+  logs,
+  ecoStats,
+  googleStats,
+  comparison,
 }: MapDisplayProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -62,18 +84,10 @@ export default function MapDisplay({
     ).addTo(map);
 
     return () => {
-      if (sourceMarkerRef.current) {
-        sourceMarkerRef.current.remove();
-      }
-      if (destinationMarkerRef.current) {
-        destinationMarkerRef.current.remove();
-      }
-      if (ecoPolylineRef.current) {
-        map.removeLayer(ecoPolylineRef.current);
-      }
-      if (googlePolylineRef.current) {
-        map.removeLayer(googlePolylineRef.current);
-      }
+      if (sourceMarkerRef.current) sourceMarkerRef.current.remove();
+      if (destinationMarkerRef.current) destinationMarkerRef.current.remove();
+      if (ecoPolylineRef.current) map.removeLayer(ecoPolylineRef.current);
+      if (googlePolylineRef.current) map.removeLayer(googlePolylineRef.current);
       map.remove();
     };
   }, []);
@@ -156,7 +170,7 @@ export default function MapDisplay({
 
     if (ecoRoute && ecoRoute.length > 0) {
       ecoPolylineRef.current = L.polyline(ecoRoute, {
-        color: "#233830", // dark green
+        color: "#233830",
         weight: 5,
         opacity: 0.9,
       }).addTo(map);
@@ -164,12 +178,19 @@ export default function MapDisplay({
 
     if (googleRoute && googleRoute.length > 0) {
       googlePolylineRef.current = L.polyline(googleRoute, {
-        color: "#4f4f4f", // slightly lighter green
+        color: "#4f4f4f",
         weight: 4,
         opacity: 0.7,
       }).addTo(map);
     }
   }, [ecoRoute, googleRoute]);
+
+  const shouldShowStats =
+    !loading &&
+    ecoStats !== null &&
+    googleStats !== null &&
+    comparison !== null &&
+    ecoRoute.length > 0;
 
   return (
     <div
@@ -178,10 +199,17 @@ export default function MapDisplay({
         backgroundColor: "#233830",
         width: "60vw",
         height: "75vh",
+        zIndex: 0, // create stacking context
       }}
     >
-      <div ref={mapRef} style={{ width: "100%", height: "100%" }} />
-      <LoadingOverlay isLoading={loading} />
+      <div ref={mapRef} style={{ width: "100%", height: "100%", zIndex: 0 }} />
+      <LoadingOverlay isLoading={loading} logs={logs} />
+      <StatsDisplay
+        ecoStats={ecoStats}
+        googleStats={googleStats}
+        comparison={comparison}
+        isVisible={shouldShowStats}
+      />
     </div>
   );
 }

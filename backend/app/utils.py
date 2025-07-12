@@ -128,6 +128,7 @@ def save_elevations_to_db(db: Session, elevation_data: Dict[int, float]):
         new_elevations = [
             dbmodels.ElevationCache(node_id=node_id, elevation=elev)
             for node_id, elev in elevation_data.items()
+            if elev is not None
         ]
         if new_elevations:
             db.bulk_save_objects(new_elevations)
@@ -136,6 +137,7 @@ def save_elevations_to_db(db: Session, elevation_data: Dict[int, float]):
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to save elevations to DB: {e}")
+
 
 # --- TomTom Caching ---
 def get_tomtom_speeds_from_db(db: Session, keys: List[str]) -> Dict[str, Optional[float]]:
@@ -162,22 +164,45 @@ def save_tomtom_speeds_to_db(db: Session, speed_data: Dict[str, Optional[float]]
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to save TomTom data to DB: {e}")
+        
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
 
 def fetch_elevation_batch(coords: List[Tuple[float, float]]) -> List[float]:
     """Fetch elevation data for a batch of coordinates from Open Topo Data API."""
     loc_str = "|".join(f"{lat},{lon}" for lat, lon in coords)
     url = f"https://api.opentopodata.org/v1/eudem25m?locations={loc_str}"
-    try:
-        r = requests.get(url, timeout=10) # Added timeout
-        r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-        results = r.json().get("results", [])
-        return [res.get("elevation", 0.0) for res in results]
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching elevation batch from {url}: {e}")
-        return [0.0] * len(coords)
-    except Exception as e:
-        logger.error(f"Unexpected error in fetch_elevation_batch: {e}")
-        return [0.0] * len(coords)
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 429:
+                logger.warning(f"Rate limited on attempt {attempt}, retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+                continue
+
+            r.raise_for_status()
+            results = r.json().get("results", [])
+            
+            # Fill missing or null elevations with 0.0
+            elevations = [
+                res.get("elevation", 0.0) if res and res.get("elevation") is not None else 0.0
+                for res in results
+            ]
+            if len(elevations) < len(coords):
+                elevations.extend([0.0] * (len(coords) - len(elevations)))
+            return elevations
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[Attempt {attempt}] Error fetching elevation batch from {url}: {e}")
+            time.sleep(RETRY_DELAY)
+        except Exception as e:
+            logger.error(f"[Attempt {attempt}] Unexpected error: {e}")
+            time.sleep(RETRY_DELAY)
+
+    logger.error(f"Failed to fetch elevation data after {MAX_RETRIES} attempts for {url}")
+    return [0.0] * len(coords)
+
 
 def fetch_speed(item: Tuple[str, Tuple[float, float]], retries: int = 3) -> Tuple[str, Optional[float]]:
     """Fetch speed data from TomTom API for a single point."""

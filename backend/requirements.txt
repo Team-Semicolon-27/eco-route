@@ -36,4 +36,5 @@ gunicorn
 python-dotenv
 # Database drivers
 psycopg2-binary
+asyncpg
 
